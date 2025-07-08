@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>ポモドーロタイマー</title>
+  <script src="https://unpkg.com/blockly/blockly.min.js"></script>
+  <style>
+    :root {
+      --bg: #e6f7ff;
+      --panel: #d9f0ff;
+      --highlight: skyblue;
+      --text: #000;
+      --nowtask: red;
+    }
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background-color: var(--bg);
+      color: var(--text);
+    }
+    .top { display: flex; height: 60%; }
+    .panel {
+      flex: 1;
+      padding: 10px;
+      overflow-y: auto;
+      border: 1px solid var(--highlight);
+      background-color: var(--panel);
+    }
+    .center { text-align: center; }
+    .timer-circle {
+      width: 200px;
+      height: 200px;
+      border-radius: 50%;
+      border: 10px solid var(--highlight);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2em;
+      margin: 20px auto;
+      position: relative;
+      background: white;
+    }
+    .buttons button {
+      margin: 5px;
+      padding: 10px 20px;
+      background-color: var(--highlight);
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    #blocklyDiv {
+      height: 40%;
+      width: 100%;
+      background-color: #fffbe6;
+    }
+    #theme-selector {
+      padding: 5px;
+      background: var(--panel);
+      text-align: center;
+      font-size: 14px;
+    }
+    #notify-controls {
+      padding: 4px 10px;
+      background: var(--panel);
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+    #task-list li.now {
+      color: var(--nowtask);
+      font-weight: bold;
+    }
+    #sound-controls {
+      font-size: 13px;
+      padding: 6px;
+      text-align: center;
+      background: var(--panel);
+    }
+  </style>
+</head>
+<body>
+  <div id="theme-selector">
+    テーマ:
+    <select onchange="switchTheme(this.value)">
+      <option value="blue">水色</option>
+      <option value="green">緑</option>
+      <option value="orange">オレンジ</option>
+      <option value="red">赤</option>
+      <option value="bw">白黒</option>
+    </select>
+  </div>
+
+  <div id="notify-controls">
+    タイマー終了音量:
+    <input type="range" id="endVolume" min="0" max="1" step="0.01" value="1" />
+    <label><input type="checkbox" id="endMute" />ミュート</label>
+  </div>
+  <div class="top">
+    <div class="panel">
+      <h3>全体スケジュール</h3>
+      <ul id="task-list"></ul>
+    </div>
+    <div class="panel center">
+      <h3>現在のタスク</h3>
+      <div id="current-task">未設定</div>
+      <div class="timer-circle">
+        <span id="timer">00:00</span>
+      </div>
+      <div class="buttons">
+        <button onclick="parseBlocks()">ブロック反映</button>
+        <button id="startStopButton" onclick="startOrStopProgram()">▶ 実行</button>
+        <button onclick="resetTimer()">リセット</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>次のタスク</h3>
+      <div id="next-task">未設定</div>
+    </div>
+  </div>
+
+  <div id="blocklyDiv"></div>
+  <xml id="toolbox" style="display: none">
+    <category name="タイマー" colour="230">
+      <block type="task_block"></block>
+      <block type="repeat_block"></block>
+    </category>
+  </xml>
+
+  <div id="sound-controls">
+    <h4>作業用BGM/動画・正弦波</h4>
+    <input type="file" id="mediaFile" accept="audio/*,video/*"><br>
+    <button onclick="playMedia()">再生</button>
+    <button onclick="stopMedia()">停止</button>
+    <label><input type="checkbox" id="mediaLoop">ループ</label>
+    &nbsp;&nbsp;&nbsp; <!-- 🔧 空白を追加 -->
+    音量: <input type="range" id="mediaVolume" min="0" max="1" step="0.01" value="0.5">
+    <label><input type="checkbox" id="mediaMute">ミュート</label><br><br>
+    正弦波（Hz）<input type="number" id="sineFreq" value="440" min="50" max="50000" step="10">
+    <button onclick="playSine()">正弦波再生</button>
+    <button onclick="stopSine()">停止</button>
+  </div>
+
+  <audio id="mediaPlayer"></audio>
+  <script>
+    const themes = {
+      blue: { '--bg': '#e6f7ff', '--panel': '#d9f0ff', '--highlight': 'skyblue' },
+      green: { '--bg': '#e8fbe6', '--panel': '#d2f5cd', '--highlight': '#9fe49a' },
+      orange: { '--bg': '#fff5e6', '--panel': '#ffe0b3', '--highlight': '#ffb84d' },
+      red: { '--bg': '#fff0f0', '--panel': '#ffcccc', '--highlight': '#ff4d4d' },
+      bw: { '--bg': '#fff', '--panel': '#eee', '--highlight': '#000' }
+    };
+    function switchTheme(t) {
+      const s = themes[t];
+      for (const key in s) document.documentElement.style.setProperty(key, s[key]);
+    }
+
+    const workspace = Blockly.inject('blocklyDiv', {
+      toolbox: document.getElementById('toolbox'),
+      scrollbars: true,
+      trashcan: true,
+      renderer: "geras"
+    });
+
+    Blockly.defineBlocksWithJsonArray([
+      {
+        type: "task_block",
+        message0: "タスク %1 分 %2",
+        args0: [
+          { type: "field_input", name: "TASK_NAME", text: "作業" },
+          { type: "field_number", name: "DURATION", value: 5, min: 1 }
+        ],
+        previousStatement: null,
+        nextStatement: null,
+        colour: 230
+      },
+      {
+        type: "repeat_block",
+        message0: "%1 回繰り返す %2 %3",
+        args0: [
+          { type: "field_number", name: "COUNT", value: 2, min: 1 },
+          { type: "input_dummy" },
+          { type: "input_statement", name: "DO" }
+        ],
+        previousStatement: null,
+        nextStatement: null,
+        colour: 120
+      }
+    ]);
+
+    let taskQueue = [], currentTaskIndex = 0, currentTime = 0, timerInterval = null, isRunning = false;
+
+    function parseBlocks() {
+      taskQueue = []; currentTaskIndex = 0;
+      const blocks = workspace.getTopBlocks(true);
+      function walk(block) {
+        if (block.type === "task_block") {
+          taskQueue.push({
+            name: block.getFieldValue("TASK_NAME"),
+            duration: parseInt(block.getFieldValue("DURATION")) * 60
+          });
+        } else if (block.type === "repeat_block") {
+          let child = block.getInputTargetBlock("DO");
+          for (let i = 0; i < parseInt(block.getFieldValue("COUNT")); i++) {
+            let cursor = child;
+            while (cursor) { walk(cursor); cursor = cursor.getNextBlock(); }
+          }
+        }
+      }
+      for (let b of blocks) {
+        walk(b);
+        let next = b.getNextBlock();
+        while (next) { walk(next); next = next.getNextBlock(); }
+      }
+      updateTaskDisplay();
+      resetTimer();
+    }
+    function startOrStopProgram() {
+      if (isRunning) {
+        stopTimer();
+        document.getElementById("startStopButton").textContent = "▶ 実行";
+      } else {
+        startTimer();
+        document.getElementById("startStopButton").textContent = "■ 停止";
+      }
+      isRunning = !isRunning;
+    }
+
+    function startTimer() {
+      if (taskQueue.length === 0 || currentTaskIndex >= taskQueue.length) return;
+      stopMedia();
+      stopSine();
+      const task = taskQueue[currentTaskIndex];
+      currentTime = task.duration;
+      document.getElementById("current-task").textContent = task.name;
+      document.getElementById("next-task").textContent = taskQueue[currentTaskIndex + 1]?.name || "なし";
+      updateTimerDisplay();
+      updateTaskDisplay();
+      timerInterval = setInterval(() => {
+        if (--currentTime > 0) {
+          updateTimerDisplay();
+        } else {
+          clearInterval(timerInterval);
+          playEndTone();
+          currentTaskIndex++;
+          startTimer();
+        }
+      }, 1000);
+    }
+
+    function stopTimer() {
+      clearInterval(timerInterval);
+    }
+
+    function resetTimer() {
+      stopTimer();
+      currentTime = 0;
+      currentTaskIndex = 0;
+      document.getElementById("current-task").textContent = "未設定";
+      document.getElementById("next-task").textContent = "未設定";
+      updateTaskDisplay();
+      updateTimerDisplay();
+    }
+
+    function updateTimerDisplay() {
+      const m = String(Math.floor(currentTime / 60)).padStart(2, '0');
+      const s = String(currentTime % 60).padStart(2, '0');
+      document.getElementById("timer").textContent = `${m}:${s}`;
+    }
+
+    function updateTaskDisplay() {
+      const ul = document.getElementById("task-list");
+      ul.innerHTML = "";
+      for (let i = 0; i < taskQueue.length; i++) {
+        const li = document.createElement("li");
+        li.textContent = taskQueue[i].name + " - " + (taskQueue[i].duration / 60) + "分";
+        if (i === currentTaskIndex) {
+          li.classList.add("now");
+          li.textContent += "（現在のタスク）";
+        }
+        ul.appendChild(li);
+      }
+    }
+
+    function playEndTone() {
+      const freq = 783.99;
+      const duration = 2;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.value = document.getElementById("endMute").checked ? 0 : parseFloat(document.getElementById("endVolume").value);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + duration);
+    }
+
+    // BGM/動画ファイル再生
+    const mediaPlayer = document.getElementById("mediaPlayer");
+    document.getElementById("mediaFile").addEventListener("change", e => {
+      const file = e.target.files[0];
+      if (file) mediaPlayer.src = URL.createObjectURL(file);
+    });
+
+    function playMedia() {
+      mediaPlayer.loop = document.getElementById("mediaLoop").checked;
+      updateMediaVolume();
+      mediaPlayer.play();
+    }
+
+    function stopMedia() {
+      mediaPlayer.pause();
+      mediaPlayer.currentTime = 0;
+    }
+
+    function updateMediaVolume() {
+      mediaPlayer.volume = document.getElementById("mediaMute").checked ? 0 : parseFloat(document.getElementById("mediaVolume").value);
+    }
+
+    document.getElementById("mediaVolume").addEventListener("input", updateMediaVolume);
+    document.getElementById("mediaMute").addEventListener("change", updateMediaVolume);
+
+    // 正弦波再生
+    let sineCtx = null, sineOsc = null, sineGain = null;
+    function playSine() {
+      stopSine();
+      sineCtx = new (window.AudioContext || window.webkitAudioContext)();
+      sineOsc = sineCtx.createOscillator();
+      sineGain = sineCtx.createGain();
+      sineOsc.type = "sine";
+      sineOsc.frequency.value = parseFloat(document.getElementById("sineFreq").value);
+      updateSineVolume();
+      sineOsc.connect(sineGain);
+      sineGain.connect(sineCtx.destination);
+      sineOsc.start();
+    }
+
+    function stopSine() {
+      if (sineOsc) sineOsc.stop();
+      if (sineCtx) sineCtx.close();
+    }
+
+    function updateSineVolume() {
+      if (sineGain) {
+        sineGain.gain.value = document.getElementById("mediaMute").checked ? 0 : parseFloat(document.getElementById("mediaVolume").value);
+      }
+    }
+
+    document.getElementById("mediaVolume").addEventListener("input", updateSineVolume);
+    document.getElementById("mediaMute").addEventListener("change", updateSineVolume);
+  </script>
+</body>
+</html>
