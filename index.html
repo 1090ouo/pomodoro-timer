@@ -194,7 +194,7 @@
       }
     ]);
 
-    let taskQueue = [], currentTaskIndex = 0, currentTime = 0, timerInterval = null, isRunning = false;
+    let taskQueue = [], currentTaskIndex = 0, currentTime = 0, timerInterval = 1/60, isRunning = false;
 
     function parseBlocks() {
       taskQueue = []; currentTaskIndex = 0;
